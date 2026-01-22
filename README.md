@@ -2,6 +2,7 @@
 
 <div align="center">
   <img src="vmacropad.ico" width="128" height="128" alt="VMacropad Icon">
+  ![App Screenshot](screenshot.png)
   <br>
   <b>An open-source, modern replacement driver for generic 3-Key / 1-Knob Macropads.</b>
   <br><br>
