@@ -217,6 +217,7 @@ class VMacroApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
+        # 1. Load basic configuration (Handles backward compatibility for new settings)
         self.load_config_early()
         
         ctk.set_appearance_mode("dark")
@@ -260,7 +261,13 @@ class VMacroApp(ctk.CTk):
 
         self.setup_sidebar()
         self.setup_main_area()
+        
+        # 2. Load the UI state vars (current preset name from config)
         self.load_config_state_ui_vars()
+        
+        # 3. NOW it is safe to save. This updates old config files to new format automatically.
+        self.save_config_state()
+        
         self.refresh_preset_list() 
         self.toggle_startup()
 
@@ -285,6 +292,7 @@ class VMacroApp(ctk.CTk):
         return os.path.join(base_path, relative_path)
 
     def load_config_early(self):
+        # Set defaults first
         self.cfg_vid = DEFAULT_VENDOR_ID
         self.cfg_pid = DEFAULT_PRODUCT_ID
         self.default_preset_name = None
@@ -292,7 +300,9 @@ class VMacroApp(ctk.CTk):
         self.cfg_notify_status = False
         self.cfg_tray_enabled = True
         self.cfg_startup = True
+        self.cfg_focus_delay = 0.5  # Default Fast Response
         
+        # Attempt to load from file
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r") as f:
@@ -304,6 +314,8 @@ class VMacroApp(ctk.CTk):
                     self.cfg_notify_status = conf.get("notify_status", False)
                     self.cfg_tray_enabled = conf.get("tray_enabled", True)
                     self.cfg_startup = conf.get("startup_enabled", True)
+                    # Backward compatibility: .get() returns 0.5 if key is missing
+                    self.cfg_focus_delay = conf.get("focus_delay", 0.5) 
             except: pass
 
     def load_config_state_ui_vars(self):
@@ -330,7 +342,8 @@ class VMacroApp(ctk.CTk):
                     "notify_preset": self.cfg_notify_preset,
                     "notify_status": self.cfg_notify_status,
                     "tray_enabled": self.cfg_tray_enabled,
-                    "startup_enabled": self.cfg_startup
+                    "startup_enabled": self.cfg_startup,
+                    "focus_delay": self.cfg_focus_delay
                 }, f, indent=4)
         except: pass
 
@@ -432,7 +445,7 @@ class VMacroApp(ctk.CTk):
     def open_settings_ui(self):
         win = ctk.CTkToplevel(self)
         win.title("Settings")
-        win.geometry("420x550")
+        win.geometry("420x650")
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.configure(fg_color=Theme.CONTAINER_BG)
@@ -444,7 +457,7 @@ class VMacroApp(ctk.CTk):
         
         try:
             x = self.winfo_x() + (self.winfo_width()//2) - 210
-            y = self.winfo_y() + (self.winfo_height()//2) - 275
+            y = self.winfo_y() + (self.winfo_height()//2) - 325
             win.geometry(f"+{x}+{y}")
         except: pass
 
@@ -467,6 +480,20 @@ class VMacroApp(ctk.CTk):
         entry_pid.insert(0, hex(self.cfg_pid))
         entry_pid.grid(row=1, column=1, padx=10, pady=5)
 
+        # --- Lifespan Strategy UI ---
+        frm_life = ctk.CTkFrame(win, fg_color="transparent")
+        frm_life.pack(pady=15, padx=40, fill="x")
+        ctk.CTkLabel(frm_life, text="Auto-Switch Strategy:", text_color=Theme.TEXT_SECONDARY, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 5))
+        
+        # Initial value logic
+        init_strategy = "Fast Response (0.5s)"
+        if self.cfg_focus_delay > 1.0:
+            init_strategy = "Max Lifespan (2.0s)"
+            
+        seg_strategy = ctk.CTkSegmentedButton(frm_life, values=["Fast Response (0.5s)", "Max Lifespan (2.0s)"])
+        seg_strategy.set(init_strategy)
+        seg_strategy.pack(fill="x")
+
         def save_and_close():
             self.cfg_notify_preset = var_notif_p.get()
             self.cfg_notify_status = var_notif_s.get()
@@ -478,6 +505,14 @@ class VMacroApp(ctk.CTk):
                     if self.tray_icon: self.tray_icon.stop()
                     self.tray_icon = None
             self.cfg_startup = var_start.get()
+            
+            # Save strategy logic
+            strat = seg_strategy.get()
+            if "Fast" in strat:
+                self.cfg_focus_delay = 0.5
+            else:
+                self.cfg_focus_delay = 2.0
+            
             self.toggle_startup()
             try:
                 new_vid = int(entry_vid.get(), 16)
@@ -699,7 +734,7 @@ class VMacroApp(ctk.CTk):
                 self.last_detected_target = target_preset
                 self.focus_timer_start = time.time()
             else:
-                if (time.time() - self.focus_timer_start) > 0.5:
+                if (time.time() - self.focus_timer_start) > self.cfg_focus_delay:
                     if target_preset != self.last_auto_uploaded_preset:
                         if self.pad.is_connected() and not self.is_uploading:
                             self.last_auto_uploaded_preset = target_preset
