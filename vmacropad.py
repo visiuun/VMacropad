@@ -1,3 +1,5 @@
+# pyinstaller --noconsole --onefile --icon=vmacropad.ico --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
+
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox, colorchooser
@@ -15,18 +17,19 @@ from PIL import Image, ImageDraw
 import pystray
 import re
 
-# --- WINDOWS APP ID FIX ---
-try:
-    myappid = u'VMacropad.Manager.1.0'
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-except:
-    pass
-
 # --- DEPENDENCIES CHECK ---
 psutil = None
 win32gui = None
 win32process = None
 win32com = None
+keyboard = None
+AudioUtilities = None
+ISimpleAudioVolume = None
+IAudioEndpointVolume = None
+CoInitialize = None
+CoUninitialize = None
+
+MISSING_LIBS = []
 
 try:
     import psutil
@@ -34,7 +37,21 @@ try:
     import win32process
     import win32com.client
 except ImportError:
-    print("Warning: 'psutil' or 'pywin32' missing. Auto-switching disabled.")
+    MISSING_LIBS.append("psutil/pywin32")
+
+try:
+    import keyboard
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume, ISimpleAudioVolume
+    from comtypes import CLSCTX_ALL, CoInitialize, CoUninitialize
+except ImportError:
+    MISSING_LIBS.append("keyboard/pycaw/comtypes")
+
+# --- WINDOWS APP ID FIX ---
+try:
+    myappid = u'VMacropad.Manager.1.0'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+except:
+    pass
 
 # --- THEME DEFINITION ---
 class Theme:
@@ -114,6 +131,97 @@ MOUSE_WHEEL = {
 }
 
 LED_MODES = {"Off": 0, "Static": 1, "Breathing": 2}
+
+# --- AUDIO CONTROLLER ---
+class AppAudioController:
+    @staticmethod
+    def adjust_app_volume(app_exe, action):
+        """
+        action: 'up', 'down', 'mute'
+        app_exe: 'chrome.exe', 'spotify.exe'
+        """
+        if not AudioUtilities: return
+        
+        # Initialize COM for this thread
+        try: CoInitialize()
+        except: pass
+
+        try:
+            found = False
+            detected_apps = []
+            
+            # Clean search term: remove .exe to allow partial matching
+            # e.g., "TIDAL.exe" -> "tidal" which matches "TIDALPlayer.exe"
+            clean_target = app_exe.lower().replace(".exe", "").strip()
+
+            # Directly fetch sessions, skipping any "Speakers" activation checks
+            sessions = AudioUtilities.GetAllSessions()
+            
+            for session in sessions:
+                try:
+                    process = session.Process
+                    if process:
+                        try: p_name = process.name()
+                        except: continue
+                        
+                        if p_name:
+                            detected_apps.append(p_name)
+                            # Fuzzy matching: check if cleaned target is inside process name
+                            if clean_target in p_name.lower():
+                                found = True
+                                volume = session.SimpleAudioVolume
+                                if action == 'mute':
+                                    current = volume.GetMute()
+                                    volume.SetMute(not current, None)
+                                else:
+                                    current_vol = volume.GetMasterVolume()
+                                    step = 0.05
+                                    new_vol = current_vol + step if action == 'up' else current_vol - step
+                                    new_vol = max(0.0, min(1.0, new_vol))
+                                    volume.SetMasterVolume(new_vol, None)
+                                    print(f"Adjusted volume for {p_name}")
+                except Exception:
+                    continue
+            
+            print(f"Search: '{clean_target}' | Found Apps: {detected_apps}")
+
+            # Fallback to Master Volume ONLY if the search worked but app wasn't found
+            if not found:
+                print(f"App '{app_exe}' not found. Falling back to Master Volume.")
+                AppAudioController._adjust_master_volume_internal(action)
+                
+        except Exception as e:
+            print(f"Audio Library Error: {e}")
+            # If library fails completely, try fallback
+            AppAudioController._adjust_master_volume_internal(action)
+        finally:
+            try: CoUninitialize()
+            except: pass
+
+    @staticmethod
+    def _adjust_master_volume_internal(action):
+        """
+        Stable fallback: Uses keyboard simulation for master volume.
+        """
+        if not keyboard:
+            print("Keyboard library missing, cannot adjust master volume.")
+            return
+
+        try:
+            if action == 'mute':
+                keyboard.send('volume mute')
+            elif action == 'up':
+                keyboard.send('volume up')
+            elif action == 'down':
+                keyboard.send('volume down')
+        except Exception as e:
+            print(f"Master Volume Key Error: {e}")
+
+# --- INTERNAL TRIGGER MAPPING ---
+INTERNAL_TRIGGER_KEYS = [
+    104, 105, 106, 107, 108, 109 # F13 - F18
+]
+TRIGGER_MODIFIER = 7 # Ctrl (1) + Shift (2) + Alt (4)
 
 # --- FILE PATHS ---
 APP_NAME = "VMacropad"
@@ -217,7 +325,6 @@ class VMacroApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        # 1. Load basic configuration (Handles backward compatibility for new settings)
         self.load_config_early()
         
         ctk.set_appearance_mode("dark")
@@ -233,6 +340,10 @@ class VMacroApp(ctk.CTk):
             self.iconbitmap(icon_path)
         except Exception:
             pass
+
+        if MISSING_LIBS:
+            messagebox.showwarning("Missing Dependencies", 
+                f"Features limited.\nTo enable App Volume control and Auto-Switching,\ninstall libraries: pip install keyboard pycaw comtypes psutil\n\nMissing: {', '.join(MISSING_LIBS)}")
 
         self.pad = MacroPadDevice(self.cfg_vid, self.cfg_pid)
         self.presets = self.load_presets()
@@ -252,22 +363,18 @@ class VMacroApp(ctk.CTk):
         self.last_detected_target = None
         self.focus_timer_start = 0
         self.last_auto_uploaded_preset = None
-        
-        # New flag: If user manually selects a preset, pause auto-switching until a LINKED app is found
         self.manual_override = False
+
+        # Active Hotkeys for App Volume
+        self.active_hotkeys = []
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         self.setup_sidebar()
         self.setup_main_area()
-        
-        # 2. Load the UI state vars (current preset name from config)
         self.load_config_state_ui_vars()
-        
-        # 3. NOW it is safe to save. This updates old config files to new format automatically.
         self.save_config_state()
-        
         self.refresh_preset_list() 
         self.toggle_startup()
 
@@ -292,7 +399,6 @@ class VMacroApp(ctk.CTk):
         return os.path.join(base_path, relative_path)
 
     def load_config_early(self):
-        # Set defaults first
         self.cfg_vid = DEFAULT_VENDOR_ID
         self.cfg_pid = DEFAULT_PRODUCT_ID
         self.default_preset_name = None
@@ -300,9 +406,8 @@ class VMacroApp(ctk.CTk):
         self.cfg_notify_status = False
         self.cfg_tray_enabled = True
         self.cfg_startup = True
-        self.cfg_focus_delay = 0.5  # Default Fast Response
+        self.cfg_focus_delay = 0.5
         
-        # Attempt to load from file
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r") as f:
@@ -314,7 +419,6 @@ class VMacroApp(ctk.CTk):
                     self.cfg_notify_status = conf.get("notify_status", False)
                     self.cfg_tray_enabled = conf.get("tray_enabled", True)
                     self.cfg_startup = conf.get("startup_enabled", True)
-                    # Backward compatibility: .get() returns 0.5 if key is missing
                     self.cfg_focus_delay = conf.get("focus_delay", 0.5) 
             except: pass
 
@@ -480,12 +584,10 @@ class VMacroApp(ctk.CTk):
         entry_pid.insert(0, hex(self.cfg_pid))
         entry_pid.grid(row=1, column=1, padx=10, pady=5)
 
-        # --- Lifespan Strategy UI ---
         frm_life = ctk.CTkFrame(win, fg_color="transparent")
         frm_life.pack(pady=15, padx=40, fill="x")
         ctk.CTkLabel(frm_life, text="Auto-Switch Strategy:", text_color=Theme.TEXT_SECONDARY, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 5))
         
-        # Initial value logic
         init_strategy = "Fast Response (0.5s)"
         if self.cfg_focus_delay > 1.0:
             init_strategy = "Max Lifespan (2.0s)"
@@ -506,7 +608,6 @@ class VMacroApp(ctk.CTk):
                     self.tray_icon = None
             self.cfg_startup = var_start.get()
             
-            # Save strategy logic
             strat = seg_strategy.get()
             if "Fast" in strat:
                 self.cfg_focus_delay = 0.5
@@ -591,6 +692,7 @@ class VMacroApp(ctk.CTk):
         
         self.tab_input = self.editor_frame.add("Input / Macro") 
         self.tab_media = self.editor_frame.add("Media")
+        self.tab_app_audio = self.editor_frame.add("App Audio")
         self.tab_led = self.editor_frame.add("LED")
         self.tab_mappings = self.editor_frame.add("App Mappings")
         
@@ -607,6 +709,7 @@ class VMacroApp(ctk.CTk):
         self.btn_upload.grid(row=3, column=0, sticky="ew", pady=(10,0))
 
     def setup_tab_content(self):
+        # --- INPUT TAB ---
         input_container = ctk.CTkFrame(self.tab_input, fg_color="transparent")
         input_container.pack(pady=5, fill="both", expand=True)
 
@@ -638,15 +741,57 @@ class VMacroApp(ctk.CTk):
         self.cb_mouse_scroll = ctk.CTkComboBox(mouse_frame, values=list(MOUSE_WHEEL.keys()), command=self.store_ui_state, width=140)
         self.cb_mouse_scroll.grid(row=1, column=1, padx=10)
 
+        # --- MEDIA TAB ---
         self.cb_media = ctk.CTkComboBox(self.tab_media, values=list(MEDIA_MAP.keys()), command=self.store_ui_state, width=300)
         self.cb_media.pack(pady=30)
 
+        # --- APP AUDIO TAB ---
+        if "keyboard/pycaw/comtypes" in MISSING_LIBS:
+            ctk.CTkLabel(self.tab_app_audio, text="Missing libraries (keyboard, pycaw, comtypes).\nCannot enable App Volume control.", text_color="red").pack(pady=20)
+        else:
+            app_audio_frame = ctk.CTkFrame(self.tab_app_audio, fg_color="transparent")
+            app_audio_frame.pack(pady=10, fill="x", padx=20)
+            
+            ctk.CTkLabel(app_audio_frame, text="Target Process Name (.exe)", text_color=Theme.TEXT_SECONDARY, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+            
+            row1 = ctk.CTkFrame(app_audio_frame, fg_color="transparent")
+            row1.pack(fill="x", pady=5)
+            self.entry_app_name = ctk.CTkEntry(row1, placeholder_text="e.g., spotify.exe")
+            self.entry_app_name.pack(side="left", fill="x", expand=True, padx=(0, 10))
+            self.entry_app_name.bind("<KeyRelease>", self.store_ui_state)
+            
+            btn_link_vol = ctk.CTkButton(row1, text="Grab Active App", width=120, fg_color=Theme.WIDGET_BG, command=self.grab_app_for_volume)
+            btn_link_vol.pack(side="right")
+            
+            ctk.CTkLabel(app_audio_frame, text="Action", text_color=Theme.TEXT_SECONDARY, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(15, 0))
+            self.cb_app_action = ctk.CTkComboBox(app_audio_frame, values=["Volume Up", "Volume Down", "Mute"], command=self.store_ui_state)
+            self.cb_app_action.pack(fill="x", pady=5)
+            
+            ctk.CTkLabel(self.tab_app_audio, text="Note: If app is not found, controls Master Volume.\nRequires this software to be running.", 
+                         text_color=Theme.TEXT_DISABLED, font=("Segoe UI", 10)).pack(pady=20)
+
+        # --- LED TAB ---
         self.cb_led = ctk.CTkComboBox(self.tab_led, values=list(LED_MODES.keys()), command=self.store_led_state, width=300)
         self.cb_led.pack(pady=30)
 
+        # --- MAPPINGS TAB ---
         self.mapping_scroll = ctk.CTkScrollableFrame(self.tab_mappings, fg_color="transparent")
         self.mapping_scroll.pack(fill="both", expand=True, padx=10, pady=10)
         self.refresh_mappings_ui()
+
+    def grab_app_for_volume(self):
+        def delayed():
+            time.sleep(3)
+            app = self.get_active_app_process(force=True)
+            if app:
+                self.entry_app_name.delete(0, 'end')
+                self.entry_app_name.insert(0, app)
+                self.store_ui_state()
+                self.after(0, lambda: messagebox.showinfo("Captured", f"Target set to: {app}"))
+            else:
+                self.after(0, lambda: messagebox.showerror("Error", "Could not detect app."))
+        messagebox.showinfo("Ready", "Focus the target app within 3 seconds...")
+        threading.Thread(target=delayed, daemon=True).start()
 
     def set_active_as_default(self):
         if not self.current_preset_name: return
@@ -708,27 +853,18 @@ class VMacroApp(ctk.CTk):
         if not self.running: return
         
         current_app = self.get_active_app_process()
-        
-        # Determine the intended preset for the current app
         target_preset = None
         
-        # Case 1: App is linked
         if current_app and current_app in self.app_mappings:
             target_preset = self.app_mappings[current_app]
-            # If we hit a linked app, we disable any manual override
             if self.manual_override:
                 self.manual_override = False
-        
-        # Case 2: App is not linked (or no app detected)
         else:
-            # If manual override is active, stick to current, don't change anything
             if self.manual_override:
-                target_preset = self.last_auto_uploaded_preset # Maintain status quo
+                target_preset = self.last_auto_uploaded_preset
             else:
-                # Standard behavior: Fallback to default
                 target_preset = self.default_preset_name
 
-        # Apply logic
         if target_preset:
             if target_preset != self.last_detected_target:
                 self.last_detected_target = target_preset
@@ -744,17 +880,14 @@ class VMacroApp(ctk.CTk):
 
     def safe_auto_load(self, target_preset):
         if self.running and self.winfo_exists():
-            # is_auto=True prevents setting manual_override to True
             self.load_preset_by_name(target_preset, is_auto=True)
             self.start_upload()
 
     def load_preset_by_name(self, name, is_auto=False):
         if name not in self.presets: return
         
-        # If loaded manually, enable override lock so we don't snap back to Default immediately
         if not is_auto:
             self.manual_override = True
-            # Also update last_auto_uploaded so the loop knows where we are
             self.last_auto_uploaded_preset = name
             
         self.current_preset_name = name
@@ -910,6 +1043,12 @@ class VMacroApp(ctk.CTk):
             if dtype == "media":
                 self.editor_frame.set("Media")
                 self.cb_media.set(next((k for k,v in MEDIA_MAP.items() if v == (d.get("b1", 0), d.get("b2", 0))), "None"))
+            elif dtype == "app_vol":
+                self.editor_frame.set("App Audio")
+                self.entry_app_name.delete(0, 'end')
+                self.entry_app_name.insert(0, d.get("app", ""))
+                act_map = {"up": "Volume Up", "down": "Volume Down", "mute": "Mute"}
+                self.cb_app_action.set(act_map.get(d.get("action", "up"), "Volume Up"))
             else:
                 self.editor_frame.set("Input / Macro")
                 mod = d.get("mod", 0)
@@ -954,6 +1093,12 @@ class VMacroApp(ctk.CTk):
         elif tab == "Media":
             b1, b2 = MEDIA_MAP.get(self.cb_media.get(), (0,0))
             self.current_data[idx] = {"type": "media", "b1": b1, "b2": b2}
+            
+        elif tab == "App Audio":
+            act_map = {"Volume Up": "up", "Volume Down": "down", "Mute": "mute"}
+            action = act_map.get(self.cb_app_action.get(), "up")
+            app_name = self.entry_app_name.get().strip()
+            self.current_data[idx] = {"type": "app_vol", "app": app_name, "action": action}
 
     def store_led_state(self, _=None):
         self.led_mode = LED_MODES.get(self.cb_led.get(), 1)
@@ -986,9 +1131,14 @@ class VMacroApp(ctk.CTk):
 
     def _upload_thread(self):
         with self.upload_lock:
+            # 1. Update Hardware
             try:
                 self.pad.select_layer(0)
                 time.sleep(0.05)
+                
+                # We need to collect hotkeys to register after upload
+                new_hotkeys = []
+
                 for i, d in enumerate(self.current_data):
                     t = d.get("type")
                     if t == "key": 
@@ -997,14 +1147,56 @@ class VMacroApp(ctk.CTk):
                         self.pad.set_media(i, d["b1"], d["b2"])
                     elif t == "mouse": 
                         self.pad.set_mouse(i, d["mouse_btn"], d["mouse_scroll"], d.get("mod", 0))
+                    elif t == "app_vol":
+                        # Hardware Side: Send secret macro (Ctrl+Alt+Shift + F13...F18)
+                        trigger_code = INTERNAL_TRIGGER_KEYS[i] # F13 is 104
+                        self.pad.set_key(i, TRIGGER_MODIFIER, trigger_code)
+                        
+                        # Software Side: Prepare hotkey registration
+                        if keyboard and AudioUtilities:
+                            # Map key code to string for keyboard lib
+                            # 104->F13 ... 109->F18
+                            f_key = f"f{13 + (trigger_code - 104)}"
+                            # Hotkey string: "ctrl+alt+shift+f13"
+                            hk_str = f"ctrl+alt+shift+{f_key}"
+                            new_hotkeys.append({
+                                "hotkey": hk_str,
+                                "app": d.get("app"),
+                                "action": d.get("action")
+                            })
+
                     time.sleep(0.02)
                 self.pad.set_led(self.led_mode)
                 self.pad.save_to_flash()
+                
+                # 2. Update Software Listeners (Main Thread Safe)
+                self.after(0, lambda: self.refresh_hotkeys(new_hotkeys))
+                
             except Exception as e:
                 print(f"Upload Error: {e}")
                 self.after(0, self.upload_finished, False)
             else:
                 self.after(0, self.upload_finished, True)
+
+    def refresh_hotkeys(self, new_hotkeys):
+        if not keyboard: return
+        
+        # Clear old
+        try:
+            for hk in self.active_hotkeys:
+                keyboard.remove_hotkey(hk)
+        except: pass
+        self.active_hotkeys.clear()
+        
+        # Add new
+        for item in new_hotkeys:
+            try:
+                # Use default arguments to capture current loop variables
+                cb = lambda a=item["app"], ac=item["action"]: AppAudioController.adjust_app_volume(a, ac)
+                hk = keyboard.add_hotkey(item["hotkey"], cb, suppress=True) 
+                self.active_hotkeys.append(hk)
+            except Exception as e:
+                print(f"Hotkey Error: {e}")
 
     def upload_finished(self, success):
         self.set_blocking_state(False)
@@ -1088,11 +1280,9 @@ class VMacroApp(ctk.CTk):
             threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def _make_tray_action(self, name):
-        # Returns a function with signature (icon, item)
         return lambda icon, item: self.tray_activate_preset(name)
 
     def _make_tray_check(self, name):
-        # Returns a function with signature (item)
         return lambda item: self.current_preset_name == name
 
     def create_tray_menu(self):
@@ -1134,6 +1324,9 @@ class VMacroApp(ctk.CTk):
     def _perform_shutdown(self):
         if self.tray_icon:
             self.tray_icon.stop()
+        if keyboard:
+            try: keyboard.unhook_all()
+            except: pass
         self.destroy()
         os._exit(0)
 
