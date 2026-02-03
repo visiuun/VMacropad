@@ -35,6 +35,8 @@ This software is designed for generic macropads using the **CH57x/CH55x** chips.
 
 ## Features
 *   **Auto-Profile Switching:** Automatically changes key mappings based on which app you are using. Use Photoshop shortcuts when Photoshop is open, then switch to Media keys when Spotify is focused.
+*   **App Audio Control:** Bind keys to change the volume of *specific* applications (e.g., lower Discord volume without lowering the game volume). Includes "Fuzzy Matching" so `tidal` finds `TIDALPlayer.exe`.
+*   **Smart Fallback:** If the specific app you are trying to control isn't open, the knob automatically falls back to controlling the Master Volume.
 *   **Modern UI:** Clean, Dark Mode interface using CustomTkinter.
 *   **System Tray Integration:** Minimizes silently to the background with very low resource usage (~0% CPU).
 *   **Visual Config:** Interactive visualizer to see exactly what you are programming.
@@ -55,8 +57,8 @@ If you want to inspect the code or run it via Python:
 # Clone the repository
 git clone https://github.com/visiuun/VMacropad.git
 
-# Install dependencies
-pip install customtkinter hidapi pywin32 psutil pystray pillow
+# Install dependencies (Updated for v1.0.3)
+pip install customtkinter hidapi pywin32 psutil pystray pillow keyboard pycaw comtypes
 
 # Run the app
 python vmacropad.py
@@ -68,11 +70,18 @@ python vmacropad.py
 3.  You have 3 seconds to click on your target application window.
 4.  Done. Whenever that app is in focus, the macropad will switch to that preset automatically.
 
+## How to use App Audio Control
+1.  Select a key or knob direction.
+2.  Go to the **"App Audio"** tab.
+3.  Click **"Grab Active App"** and click on the window you want to control (e.g., Spotify), OR manually type the process name (e.g., `spotify`).
+4.  Select the action (Volume Up, Down, or Mute).
+5.  Now that key will only change Spotify's volume. If Spotify is closed, it will change the system volume instead.
+
 ## Building the EXE
-If you want to compile it yourself, use the following PyInstaller command. This ensures the icon and theme files are bundled correctly inside the executable.
+If you want to compile it yourself, use the following PyInstaller command. This ensures the icon, theme files, and new audio libraries are bundled correctly.
 
 ```powershell
-pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --hidden-import=win32gui --hidden-import=win32process --hidden-import=psutil --name="VMacropad" --collect-all customtkinter --clean vmacropad.py
+pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
 ```
 
 ## Credits
