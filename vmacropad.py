@@ -17,6 +17,15 @@ from PIL import Image, ImageDraw
 import pystray
 import re
 
+# --- CONSOLE HIDER FAILSAFE ---
+# Forces the console window to hide immediately if it appears (Fixes black screen issue)
+try:
+    if getattr(sys, 'frozen', False):
+        import ctypes
+        ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+except:
+    pass
+
 # --- VERSION INFO ---
 CURRENT_VERSION = "v1.0.4"
 GITHUB_REPO_API = "https://api.github.com/repos/visiuun/VMacropad/releases/latest"
@@ -189,19 +198,19 @@ class AppAudioController:
                                     new_vol = current_vol + step if action == 'up' else current_vol - step
                                     new_vol = max(0.0, min(1.0, new_vol))
                                     volume.SetMasterVolume(new_vol, None)
-                                    print(f"Adjusted volume for {p_name}")
+                                    # print(f"Adjusted volume for {p_name}")
                 except Exception:
                     continue
             
-            print(f"Search: '{clean_target}' | Found Apps: {detected_apps}")
+            # print(f"Search: '{clean_target}' | Found Apps: {detected_apps}")
 
             # Fallback to Master Volume ONLY if the search worked but app wasn't found
             if not found:
-                print(f"App '{app_exe}' not found. Falling back to Master Volume.")
+                # print(f"App '{app_exe}' not found. Falling back to Master Volume.")
                 AppAudioController._adjust_master_volume_internal(action)
                 
         except Exception as e:
-            print(f"Audio Library Error: {e}")
+            # print(f"Audio Library Error: {e}")
             # If library fails completely, try fallback
             AppAudioController._adjust_master_volume_internal(action)
         finally:
@@ -214,7 +223,7 @@ class AppAudioController:
         Stable fallback: Uses keyboard simulation for master volume.
         """
         if not keyboard:
-            print("Keyboard library missing, cannot adjust master volume.")
+            # print("Keyboard library missing, cannot adjust master volume.")
             return
 
         try:
@@ -225,7 +234,8 @@ class AppAudioController:
             elif action == 'down':
                 keyboard.send('volume down')
         except Exception as e:
-            print(f"Master Volume Key Error: {e}")
+            pass
+            # print(f"Master Volume Key Error: {e}")
 
 # --- INTERNAL TRIGGER MAPPING ---
 INTERNAL_TRIGGER_KEYS = [
@@ -390,7 +400,9 @@ class VMacroApp(ctk.CTk):
         self.load_config_state_ui_vars()
         self.save_config_state()
         self.refresh_preset_list() 
-        self.toggle_startup()
+        
+        # FIX: Ensure startup shortcut points to EXE, not python
+        self.force_refresh_startup()
 
         self.perform_initial_connection()
         self.setup_tray()
@@ -508,25 +520,29 @@ class VMacroApp(ctk.CTk):
                 if self.compare_versions(latest_tag, CURRENT_VERSION):
                     self.after(0, lambda: self.notify_update(latest_tag, html_url))
         except Exception as e:
-            print(f"Update check failed: {e}")
+            # Silently fail on network error to avoid console popup
+            pass
 
     def compare_versions(self, latest, current):
-        # Remove 'v'
-        l_str = latest.lower().lstrip('v')
-        c_str = current.lower().lstrip('v')
-        
-        # Split by dots and clean non-digit chars if any
-        l_parts = [int(x) for x in l_str.split('.') if x.isdigit()]
-        c_parts = [int(x) for x in c_str.split('.') if x.isdigit()]
-        
-        # Compare
-        for i in range(max(len(l_parts), len(c_parts))):
-            l_val = l_parts[i] if i < len(l_parts) else 0
-            c_val = c_parts[i] if i < len(c_parts) else 0
+        try:
+            # Remove 'v'
+            l_str = latest.lower().lstrip('v')
+            c_str = current.lower().lstrip('v')
             
-            if l_val > c_val: return True
-            if l_val < c_val: return False
-        return False
+            # Split by dots and clean non-digit chars if any
+            l_parts = [int(x) for x in l_str.split('.') if x.isdigit()]
+            c_parts = [int(x) for x in c_str.split('.') if x.isdigit()]
+            
+            # Compare
+            for i in range(max(len(l_parts), len(c_parts))):
+                l_val = l_parts[i] if i < len(l_parts) else 0
+                c_val = c_parts[i] if i < len(c_parts) else 0
+                
+                if l_val > c_val: return True
+                if l_val < c_val: return False
+            return False
+        except:
+            return False
 
     def notify_update(self, version, url):
         # Desktop Notification if tray is enabled
@@ -562,25 +578,37 @@ class VMacroApp(ctk.CTk):
             with open(MAPPINGS_FILE, "w") as f: json.dump(self.app_mappings, f, indent=4)
         except: pass
 
+    def force_refresh_startup(self):
+        # Always run startup toggle logic on launch to fix broken paths (like python.exe)
+        self.toggle_startup()
+
     def toggle_startup(self):
         try:
+            if not win32com: return
             startup_folder = os.path.join(os.getenv('APPDATA'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
             shortcut_path = os.path.join(startup_folder, "VMacropad.lnk")
             
             if self.cfg_startup:
                 target = sys.executable
+                
+                # If we are frozen, target is the exe. If script, it's python.exe.
+                # We overwrite the shortcut to ensure it matches the CURRENT way we are running.
                 shell = win32com.client.Dispatch("WScript.Shell")
                 shortcut = shell.CreateShortcut(shortcut_path)
                 shortcut.TargetPath = target
                 if not getattr(sys, 'frozen', False):
                     shortcut.Arguments = f'"{os.path.abspath(__file__)}"'
+                else:
+                    shortcut.Arguments = "" # Clear args if frozen
+                    
                 shortcut.WorkingDirectory = os.path.dirname(target)
                 shortcut.IconLocation = target
                 shortcut.Save()
             else:
                 if os.path.exists(shortcut_path):
                     os.remove(shortcut_path)
-        except Exception: pass
+        except Exception: 
+            pass
 
     def setup_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, fg_color=Theme.CONTAINER_BG, corner_radius=0, width=260)
