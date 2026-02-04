@@ -36,6 +36,7 @@ This software is designed for generic macropads using the **CH57x/CH55x** chips.
 ## Features
 *   **Auto-Profile Switching:** Automatically changes key mappings based on which app you are using. Use Photoshop shortcuts when Photoshop is open, then switch to Media keys when Spotify is focused.
 *   **App Audio Control:** Bind keys to change the volume of *specific* applications (e.g., lower Discord volume without lowering the game volume). Includes "Fuzzy Matching" so `tidal` finds `TIDALPlayer.exe`.
+*   **Automatic Updates:** Checks GitHub on startup and notifies you when a new version is available, ensuring you always have the latest features and bug fixes.
 *   **Smart Fallback:** If the specific app you are trying to control isn't open, the knob automatically falls back to controlling the Master Volume.
 *   **Modern UI:** Clean, Dark Mode interface using CustomTkinter.
 *   **System Tray Integration:** Minimizes silently to the background with very low resource usage (~0% CPU).
@@ -57,8 +58,8 @@ If you want to inspect the code or run it via Python:
 # Clone the repository
 git clone https://github.com/visiuun/VMacropad.git
 
-# Install dependencies (Updated for v1.0.3)
-pip install customtkinter hidapi pywin32 psutil pystray pillow keyboard pycaw comtypes
+# Install dependencies (Updated for v1.0.4)
+pip install customtkinter hidapi pywin32 psutil pystray pillow keyboard pycaw comtypes requests
 
 # Run the app
 python vmacropad.py
