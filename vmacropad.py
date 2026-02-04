@@ -1,4 +1,4 @@
-# pyinstaller --noconsole --onefile --icon=vmacropad.ico --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
+# pyinstaller --noconsole --onefile --icon=VMacropad.ico --add-data "VMacropad.ico;." --collect-all customtkinter VMacropad.py
 
 import customtkinter as ctk
 import tkinter as tk
@@ -17,6 +17,10 @@ from PIL import Image, ImageDraw
 import pystray
 import re
 
+# --- VERSION INFO ---
+CURRENT_VERSION = "v1.0.4"
+GITHUB_REPO_API = "https://api.github.com/repos/visiuun/VMacropad/releases/latest"
+
 # --- DEPENDENCIES CHECK ---
 psutil = None
 win32gui = None
@@ -28,6 +32,7 @@ ISimpleAudioVolume = None
 IAudioEndpointVolume = None
 CoInitialize = None
 CoUninitialize = None
+requests = None
 
 MISSING_LIBS = []
 
@@ -45,6 +50,11 @@ try:
     from comtypes import CLSCTX_ALL, CoInitialize, CoUninitialize
 except ImportError:
     MISSING_LIBS.append("keyboard/pycaw/comtypes")
+
+try:
+    import requests
+except ImportError:
+    MISSING_LIBS.append("requests")
 
 # --- WINDOWS APP ID FIX ---
 try:
@@ -342,8 +352,12 @@ class VMacroApp(ctk.CTk):
             pass
 
         if MISSING_LIBS:
-            messagebox.showwarning("Missing Dependencies", 
-                f"Features limited.\nTo enable App Volume control and Auto-Switching,\ninstall libraries: pip install keyboard pycaw comtypes psutil\n\nMissing: {', '.join(MISSING_LIBS)}")
+            # We filter out requests from the general warning if it's the only one missing, 
+            # since it's just for updates.
+            imp_missing = [m for m in MISSING_LIBS if m != "requests"]
+            if imp_missing:
+                messagebox.showwarning("Missing Dependencies", 
+                    f"Features limited.\nTo enable App Volume control and Auto-Switching,\ninstall libraries: pip install keyboard pycaw comtypes psutil\n\nMissing: {', '.join(imp_missing)}")
 
         self.pad = MacroPadDevice(self.cfg_vid, self.cfg_pid)
         self.presets = self.load_presets()
@@ -381,6 +395,10 @@ class VMacroApp(ctk.CTk):
         self.perform_initial_connection()
         self.setup_tray()
         
+        # Automatic Update Check
+        if self.cfg_check_updates and "requests" not in MISSING_LIBS:
+            threading.Thread(target=self.perform_update_check, daemon=True).start()
+        
         self.check_conn_loop()
         self.app_monitor_loop()
         
@@ -407,6 +425,7 @@ class VMacroApp(ctk.CTk):
         self.cfg_tray_enabled = True
         self.cfg_startup = True
         self.cfg_focus_delay = 0.5
+        self.cfg_check_updates = True
         
         if os.path.exists(CONFIG_FILE):
             try:
@@ -420,6 +439,7 @@ class VMacroApp(ctk.CTk):
                     self.cfg_tray_enabled = conf.get("tray_enabled", True)
                     self.cfg_startup = conf.get("startup_enabled", True)
                     self.cfg_focus_delay = conf.get("focus_delay", 0.5) 
+                    self.cfg_check_updates = conf.get("check_updates", True)
             except: pass
 
     def load_config_state_ui_vars(self):
@@ -447,7 +467,8 @@ class VMacroApp(ctk.CTk):
                     "notify_status": self.cfg_notify_status,
                     "tray_enabled": self.cfg_tray_enabled,
                     "startup_enabled": self.cfg_startup,
-                    "focus_delay": self.cfg_focus_delay
+                    "focus_delay": self.cfg_focus_delay,
+                    "check_updates": self.cfg_check_updates
                 }, f, indent=4)
         except: pass
 
@@ -473,6 +494,49 @@ class VMacroApp(ctk.CTk):
                 if self.tray_icon:
                     self.tray_icon.notify(message, title)
             threading.Thread(target=_delayed_notify, daemon=True).start()
+
+    # --- UPDATE CHECKER LOGIC ---
+    def perform_update_check(self):
+        if not requests: return
+        try:
+            r = requests.get(GITHUB_REPO_API, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                latest_tag = data.get("tag_name", "v0.0.0")
+                html_url = data.get("html_url", "https://github.com/visiuun/VMacropad/releases")
+                
+                if self.compare_versions(latest_tag, CURRENT_VERSION):
+                    self.after(0, lambda: self.notify_update(latest_tag, html_url))
+        except Exception as e:
+            print(f"Update check failed: {e}")
+
+    def compare_versions(self, latest, current):
+        # Remove 'v'
+        l_str = latest.lower().lstrip('v')
+        c_str = current.lower().lstrip('v')
+        
+        # Split by dots and clean non-digit chars if any
+        l_parts = [int(x) for x in l_str.split('.') if x.isdigit()]
+        c_parts = [int(x) for x in c_str.split('.') if x.isdigit()]
+        
+        # Compare
+        for i in range(max(len(l_parts), len(c_parts))):
+            l_val = l_parts[i] if i < len(l_parts) else 0
+            c_val = c_parts[i] if i < len(c_parts) else 0
+            
+            if l_val > c_val: return True
+            if l_val < c_val: return False
+        return False
+
+    def notify_update(self, version, url):
+        # Desktop Notification if tray is enabled
+        if self.cfg_tray_enabled and self.tray_icon:
+            self.notify_user("Update Available", f"New version {version} is available!")
+        
+        # Popup Message
+        ans = messagebox.askyesno("Update Available", f"A new version ({version}) is available.\n\nCurrent: {CURRENT_VERSION}\n\nWould you like to open the download page?")
+        if ans:
+            webbrowser.open(url)
 
     def load_presets(self):
         if os.path.exists(PRESETS_FILE):
@@ -549,7 +613,7 @@ class VMacroApp(ctk.CTk):
     def open_settings_ui(self):
         win = ctk.CTkToplevel(self)
         win.title("Settings")
-        win.geometry("420x650")
+        win.geometry("420x720")
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.configure(fg_color=Theme.CONTAINER_BG)
@@ -561,7 +625,7 @@ class VMacroApp(ctk.CTk):
         
         try:
             x = self.winfo_x() + (self.winfo_width()//2) - 210
-            y = self.winfo_y() + (self.winfo_height()//2) - 325
+            y = self.winfo_y() + (self.winfo_height()//2) - 360
             win.geometry(f"+{x}+{y}")
         except: pass
 
@@ -571,6 +635,7 @@ class VMacroApp(ctk.CTk):
         var_notif_s = ctk.BooleanVar(value=self.cfg_notify_status)
         var_tray = ctk.BooleanVar(value=self.cfg_tray_enabled)
         var_start = ctk.BooleanVar(value=self.cfg_startup)
+        var_update = ctk.BooleanVar(value=self.cfg_check_updates)
         
         frm_hw = ctk.CTkFrame(win, fg_color="transparent")
         frm_hw.pack(pady=10, padx=40, fill="x")
@@ -607,6 +672,7 @@ class VMacroApp(ctk.CTk):
                     if self.tray_icon: self.tray_icon.stop()
                     self.tray_icon = None
             self.cfg_startup = var_start.get()
+            self.cfg_check_updates = var_update.get()
             
             strat = seg_strategy.get()
             if "Fast" in strat:
@@ -636,9 +702,15 @@ class VMacroApp(ctk.CTk):
         ctk.CTkCheckBox(win, text="Enable System Tray Icon", variable=var_tray).pack(pady=10, padx=40, anchor="w")
         ctk.CTkCheckBox(win, text="Start with Windows", variable=var_start).pack(pady=10, padx=40, anchor="w")
         
+        # Check Updates UI
+        ctk.CTkCheckBox(win, text="Check for Updates Automatically", variable=var_update).pack(pady=10, padx=40, anchor="w")
+        
         ctk.CTkButton(win, text="SAVE & CLOSE", command=save_and_close, fg_color=Theme.ACTIVE_BUTTON, text_color="black").pack(pady=30)
         
-        ctk.CTkLabel(win, text="Created by Visiuun", text_color=Theme.TEXT_SECONDARY).pack(pady=(10, 0))
+        # Version Label
+        ctk.CTkLabel(win, text=f"Version: {CURRENT_VERSION}", text_color=Theme.TEXT_DISABLED, font=("Segoe UI", 10)).pack(pady=(0, 0))
+
+        ctk.CTkLabel(win, text="Created by Visiuun", text_color=Theme.TEXT_SECONDARY).pack(pady=(5, 0))
         link = ctk.CTkButton(win, text="github.com/visiuun", fg_color="transparent", text_color="#4da6ff", hover=False, 
                              command=lambda: webbrowser.open("https://github.com/visiuun"))
         link.pack()
@@ -1157,7 +1229,7 @@ class VMacroApp(ctk.CTk):
                             # Map key code to string for keyboard lib
                             # 104->F13 ... 109->F18
                             f_key = f"f{13 + (trigger_code - 104)}"
-                            # Hotkey string: "ctrl+alt+shift+f13"
+                            # Hotkey string: "ctrl+alt+shift+{f_key}"
                             hk_str = f"ctrl+alt+shift+{f_key}"
                             new_hotkeys.append({
                                 "hotkey": hk_str,
