@@ -73,7 +73,7 @@ python vmacropad.py
 If you want to compile it yourself, use the following PyInstaller command. This ensures the icon, theme files, and audio libraries are bundled correctly.
 
 ```powershell
-pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --hidden-import=win32gui --hidden-import=win32process --hidden-import=psutil --hidden-import=keyboard --hidden-import=pycaw --hidden-import=comtypes --name="VMacropad" --collect-all customtkinter --clean vmacropad.py
+pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --collect-all customtkinter --collect-all pycaw --collect-all comtypes --hidden-import=keyboard --hidden-import=win32gui --hidden-import=win32process --hidden-import=psutil --hidden-import=requests --name="VMacropad" --clean vmacropad.py
 ```
 
 ## Credits
