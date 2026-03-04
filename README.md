@@ -3,7 +3,7 @@
 <div align="center">
   <img src="vmacropad.ico" width="128" height="128" alt="VMacropad Icon">
   <br>
-  <b>An open-source, modern replacement driver for generic 3-Key / 1-Knob Macropads.</b>
+  <b>An open-source, modern replacement driver for generic Macropads.</b>
   <br><br>
   <a href="https://github.com/visiuun/VMacropad/releases/latest">
     <img src="https://img.shields.io/badge/Download-Windows%20Exe-blue?style=for-the-badge&logo=windows" alt="Download">
@@ -28,20 +28,19 @@ This software is designed for generic macropads using the **CH57x/CH55x** chips.
 **Replaces software for:**
 *   SayoDevice / SimPad (Generic Clones)
 *   "RSoft" MacroPad
-*   Generic "3-Key Mini Keyboard" listings on Amazon/AliExpress
+*   Generic 3-Key + Knob or 4-Key Macropad listings on Amazon/AliExpress
 *   Devices that identify as "Keypad" or "USB Input Device" with the IDs above
 
 *Note: If your device uses different IDs, you can change them directly in the app Settings menu.*
 
 ## Features
-*   **Auto-Profile Switching:** Automatically changes key mappings based on which app you are using. Use Photoshop shortcuts when Photoshop is open, then switch to Media keys when Spotify is focused.
-*   **App Audio Control:** Bind keys to change the volume of *specific* applications (e.g., lower Discord volume without lowering the game volume). Includes "Fuzzy Matching" so `tidal` finds `TIDALPlayer.exe`.
-*   **Automatic Updates:** Checks GitHub on startup and notifies you when a new version is available, ensuring you always have the latest features and bug fixes.
-*   **Smart Fallback:** If the specific app you are trying to control isn't open, the knob automatically falls back to controlling the Master Volume.
+*   **Layout Support:** Now supports both **3-Key + Knob** and **4-Key** layouts. You can toggle this in the Settings menu.
+*   **Auto-Profile Switching:** Automatically changes key mappings based on which app you are using.
+*   **App Audio Control:** Bind keys to change the volume of *specific* applications (e.g., lower Discord volume without lowering the game volume). Includes "Fuzzy Matching" so `spotify` finds `Spotify.exe`.
+*   **Automatic Updates:** Checks GitHub on startup and notifies you of new versions.
+*   **Smart Fallback:** If a specifically targeted app isn't open, audio keys automatically fallback to Master Volume.
 *   **Modern UI:** Clean, Dark Mode interface using CustomTkinter.
-*   **System Tray Integration:** Minimizes silently to the background with very low resource usage (~0% CPU).
-*   **Visual Config:** Interactive visualizer to see exactly what you are programming.
-*   **Instant Save:** No "Apply" button required. Changes upload to the device memory instantly.
+*   **System Tray Integration:** Minimizes silently to the background.
 *   **Portable:** Single `.exe` file. No installation required.
 
 ## Installation
@@ -58,31 +57,23 @@ If you want to inspect the code or run it via Python:
 # Clone the repository
 git clone https://github.com/visiuun/VMacropad.git
 
-# Install dependencies (Updated for v1.0.4)
+# Install dependencies (Required for Audio and Hotkey features)
 pip install customtkinter hidapi pywin32 psutil pystray pillow keyboard pycaw comtypes requests
 
 # Run the app
 python vmacropad.py
 ```
 
-## How to use Auto-Switching
-1.  Create a new preset (e.g. "Photoshop").
-2.  Click the **"Link to App"** button.
-3.  You have 3 seconds to click on your target application window.
-4.  Done. Whenever that app is in focus, the macropad will switch to that preset automatically.
-
-## How to use App Audio Control
-1.  Select a key or knob direction.
-2.  Go to the **"App Audio"** tab.
-3.  Click **"Grab Active App"** and click on the window you want to control (e.g., Spotify), OR manually type the process name (e.g., `spotify`).
-4.  Select the action (Volume Up, Down, or Mute).
-5.  Now that key will only change Spotify's volume. If Spotify is closed, it will change the system volume instead.
+## How to use
+1.  **Layout:** Go to **Settings** and select your hardware layout ("3-Key + Knob" or "4-Key").
+2.  **Auto-Switching:** Create a preset, click **"Link to App"**, and focus your target application within 3 seconds.
+3.  **App Audio:** In the **"App Audio"** tab, enter the name of the process you want to control (e.g., `discord.exe`).
 
 ## Building the EXE
-If you want to compile it yourself, use the following PyInstaller command. This ensures the icon, theme files, and new audio libraries are bundled correctly.
+If you want to compile it yourself, use the following PyInstaller command. This ensures the icon, theme files, and audio libraries are bundled correctly.
 
 ```powershell
-pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
+pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --hidden-import=win32gui --hidden-import=win32process --hidden-import=psutil --hidden-import=keyboard --hidden-import=pycaw --hidden-import=comtypes --name="VMacropad" --collect-all customtkinter --clean vmacropad.py
 ```
 
 ## Credits
