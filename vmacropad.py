@@ -2,7 +2,6 @@
 
 import customtkinter as ctk
 import tkinter as tk
-import tkinter.ttk as ttk
 from tkinter import messagebox, colorchooser
 import hid
 import json
@@ -358,8 +357,6 @@ class VMacroApp(ctk.CTk):
             self.iconbitmap(icon_path)
         except Exception:
             pass
-            
-        self.setup_native_dropdown_style()
 
         if MISSING_LIBS:
             messagebox.showwarning("Missing Dependencies", 
@@ -414,32 +411,6 @@ class VMacroApp(ctk.CTk):
         # Check for updates only if running as a standalone compiled executable
         if getattr(sys, 'frozen', False):
             threading.Thread(target=self.check_for_updates, daemon=True).start()
-
-    def setup_native_dropdown_style(self):
-        style = ttk.Style(self)
-        if 'clam' in style.theme_names():
-            style.theme_use('clam')
-        
-        style.configure("Dark.TCombobox",
-                        fieldbackground=Theme.WIDGET_BG,
-                        background=Theme.CONTAINER_BG,
-                        foreground=Theme.TEXT_PRIMARY,
-                        arrowcolor=Theme.TEXT_PRIMARY,
-                        bordercolor=Theme.CONTAINER_BG,
-                        lightcolor=Theme.CONTAINER_BG,
-                        darkcolor=Theme.CONTAINER_BG)
-                        
-        style.map("Dark.TCombobox",
-                  fieldbackground=[("readonly", Theme.WIDGET_BG)],
-                  selectbackground=[("readonly", Theme.WIDGET_BG)],
-                  selectforeground=[("readonly", Theme.TEXT_PRIMARY)],
-                  background=[("active", Theme.BUTTON_HOVER)])
-                  
-        self.option_add('*TCombobox*Listbox.background', Theme.CONTAINER_BG)
-        self.option_add('*TCombobox*Listbox.foreground', Theme.TEXT_PRIMARY)
-        self.option_add('*TCombobox*Listbox.selectBackground', Theme.ACTIVE_BUTTON)
-        self.option_add('*TCombobox*Listbox.selectForeground', Theme.TEXT_INVERSE)
-        self.option_add('*TCombobox*Listbox.font', ("Segoe UI", 11))
 
     def resource_path(self, relative_path):
         try:
@@ -815,9 +786,8 @@ class VMacroApp(ctk.CTk):
             ctk.CTkCheckBox(mod_frame, text=t, variable=v, command=self.store_ui_state, fg_color=Theme.ACTIVE_BUTTON, text_color=Theme.TEXT_PRIMARY).pack(side="left", padx=10)
 
         ctk.CTkLabel(input_container, text="Keyboard Key", font=("Segoe UI", 12, "bold"), text_color=Theme.TEXT_SECONDARY).pack(pady=(15,0))
-        self.cb_key = ttk.Combobox(input_container, values=list(KEY_MAP.keys()), style="Dark.TCombobox", state="readonly", width=40)
+        self.cb_key = ctk.CTkComboBox(input_container, values=list(KEY_MAP.keys()), command=self.store_ui_state, width=300)
         self.cb_key.pack(pady=5)
-        self.cb_key.bind("<<ComboboxSelected>>", self.store_ui_state)
 
         ctk.CTkLabel(input_container, text="--- AND / OR ---", font=("Segoe UI", 10), text_color=Theme.TEXT_DISABLED).pack(pady=5)
 
@@ -825,19 +795,16 @@ class VMacroApp(ctk.CTk):
         mouse_frame.pack(pady=5)
         
         ctk.CTkLabel(mouse_frame, text="Mouse Button", font=("Segoe UI", 12, "bold"), text_color=Theme.TEXT_SECONDARY).grid(row=0, column=0, padx=10)
-        self.cb_mouse_btn = ttk.Combobox(mouse_frame, values=list(MOUSE_BUTTONS.keys()), style="Dark.TCombobox", state="readonly", width=20)
+        self.cb_mouse_btn = ctk.CTkComboBox(mouse_frame, values=list(MOUSE_BUTTONS.keys()), command=self.store_ui_state, width=140)
         self.cb_mouse_btn.grid(row=1, column=0, padx=10)
-        self.cb_mouse_btn.bind("<<ComboboxSelected>>", self.store_ui_state)
 
         ctk.CTkLabel(mouse_frame, text="Mouse Wheel", font=("Segoe UI", 12, "bold"), text_color=Theme.TEXT_SECONDARY).grid(row=0, column=1, padx=10)
-        self.cb_mouse_scroll = ttk.Combobox(mouse_frame, values=list(MOUSE_WHEEL.keys()), style="Dark.TCombobox", state="readonly", width=20)
+        self.cb_mouse_scroll = ctk.CTkComboBox(mouse_frame, values=list(MOUSE_WHEEL.keys()), command=self.store_ui_state, width=140)
         self.cb_mouse_scroll.grid(row=1, column=1, padx=10)
-        self.cb_mouse_scroll.bind("<<ComboboxSelected>>", self.store_ui_state)
 
         # --- MEDIA TAB ---
-        self.cb_media = ttk.Combobox(self.tab_media, values=list(MEDIA_MAP.keys()), style="Dark.TCombobox", state="readonly", width=40)
+        self.cb_media = ctk.CTkComboBox(self.tab_media, values=list(MEDIA_MAP.keys()), command=self.store_ui_state, width=300)
         self.cb_media.pack(pady=30)
-        self.cb_media.bind("<<ComboboxSelected>>", self.store_ui_state)
 
         # --- APP AUDIO TAB ---
         if "keyboard/pycaw/comtypes" in MISSING_LIBS:
@@ -858,17 +825,15 @@ class VMacroApp(ctk.CTk):
             btn_link_vol.pack(side="right")
             
             ctk.CTkLabel(app_audio_frame, text="Action", text_color=Theme.TEXT_SECONDARY, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(15, 0))
-            self.cb_app_action = ttk.Combobox(app_audio_frame, values=["Volume Up", "Volume Down", "Mute"], style="Dark.TCombobox", state="readonly")
+            self.cb_app_action = ctk.CTkComboBox(app_audio_frame, values=["Volume Up", "Volume Down", "Mute"], command=self.store_ui_state)
             self.cb_app_action.pack(fill="x", pady=5)
-            self.cb_app_action.bind("<<ComboboxSelected>>", self.store_ui_state)
             
             ctk.CTkLabel(self.tab_app_audio, text="Note: If app is not found, controls Master Volume.\nRequires this software to be running.", 
                          text_color=Theme.TEXT_DISABLED, font=("Segoe UI", 10)).pack(pady=20)
 
         # --- LED TAB ---
-        self.cb_led = ttk.Combobox(self.tab_led, values=list(LED_MODES.keys()), style="Dark.TCombobox", state="readonly", width=40)
+        self.cb_led = ctk.CTkComboBox(self.tab_led, values=list(LED_MODES.keys()), command=self.store_led_state, width=300)
         self.cb_led.pack(pady=30)
-        self.cb_led.bind("<<ComboboxSelected>>", self.store_led_state)
 
         # --- MAPPINGS TAB ---
         self.mapping_scroll = ctk.CTkScrollableFrame(self.tab_mappings, fg_color="transparent")
