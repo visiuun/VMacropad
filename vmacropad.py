@@ -1,4 +1,4 @@
-# pyinstaller --noconsole --onefile --icon=vmacropad.ico --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
+# pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --collect-all customtkinter --hidden-import psutil --hidden-import win32gui --hidden-import win32process --hidden-import win32com --hidden-import hid --hidden-import pystray --hidden-import PIL --name="VMacropad" --clean vmacropad.py
 
 import customtkinter as ctk
 import tkinter as tk
