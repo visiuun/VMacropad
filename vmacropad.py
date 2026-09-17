@@ -1,4 +1,4 @@
-# pyinstaller --noconsole --onefile --icon="vmacropad.ico" --add-data "vmacropad.ico;." --collect-all customtkinter --hidden-import psutil --hidden-import win32gui --hidden-import win32process --hidden-import win32com --hidden-import hid --hidden-import pystray --hidden-import PIL --name="VMacropad" --clean vmacropad.py
+# pyinstaller --noconsole --onefile --icon=vmacropad.ico --add-data "vmacropad.ico;." --collect-all customtkinter vmacropad.py
 
 import customtkinter as ctk
 import tkinter as tk
@@ -152,7 +152,7 @@ TRIGGER_MODIFIER = 7 # Ctrl (1) + Shift (2) + Alt (4)
 
 # --- APP INFO ---
 APP_NAME = "VMacropad"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 GITHUB_REPO = "visiuun/vmacropad"
 
 # --- FILE PATHS ---
@@ -163,6 +163,44 @@ if not os.path.exists(APP_DATA_DIR):
 CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
 PRESETS_FILE = os.path.join(APP_DATA_DIR, "presets.json")
 MAPPINGS_FILE = os.path.join(APP_DATA_DIR, "mappings.json")
+
+# --- MACRO EXECUTOR ---
+class MacroExecutor:
+    _lock = threading.Lock()
+
+    @staticmethod
+    def play_macro(steps):
+        if not keyboard or not steps: return
+        def _run():
+            with MacroExecutor._lock:
+                time.sleep(0.04)
+                # Release residual trigger modifiers to prevent modifier cross-talk
+                for mod in ('ctrl', 'alt', 'shift', 'windows'):
+                    try: keyboard.release(mod)
+                    except: pass
+                time.sleep(0.01)
+                
+                for step in steps:
+                    stype = step.get("type")
+                    try:
+                        if stype == "press":
+                            k = step.get("key", "")
+                            if k: keyboard.send(k)
+                        elif stype == "down":
+                            k = step.get("key", "")
+                            if k: keyboard.press(k)
+                        elif stype == "up":
+                            k = step.get("key", "")
+                            if k: keyboard.release(k)
+                        elif stype == "text":
+                            t = step.get("text", "")
+                            if t: keyboard.write(t, delay=0.002)
+                        elif stype == "delay":
+                            ms = float(step.get("ms", 50))
+                            time.sleep(max(0.001, ms / 1000.0))
+                    except Exception as err:
+                        print(f"Macro step execution error: {err}")
+        threading.Thread(target=_run, daemon=True).start()
 
 # --- AUDIO CONTROLLER ---
 class AppAudioController:
@@ -366,7 +404,9 @@ class VMacroApp(ctk.CTk):
         self.presets = self.load_presets()
         self.app_mappings = self.load_mappings()
         
-        self.current_data = [{"type": "key", "mod": 0, "code": 0, "mouse_btn": 0, "mouse_scroll": 0} for _ in range(6)]
+        self.current_data = [{"type": "key", "mod": 0, "code": 0, "mouse_btn": 0, "mouse_scroll": 0, "steps": []} for _ in range(6)]
+        self.is_recording_macro = False
+        self.macro_hook = None
         self.led_mode = 1
         self.selected_key_index = 0
         self.current_preset_name = None
@@ -614,7 +654,7 @@ class VMacroApp(ctk.CTk):
         btn_frame.grid(row=3, column=0, sticky="ew", pady=20, padx=20)
         btn_frame.grid_columnconfigure((0,1), weight=1)
 
-        self.btn_add = ctk.CTkButton(btn_frame, text="NEW", font=Theme.FONT_BODY, fg_color=Theme.BUTTON_HOVER, hover_color=Theme.TEXT_DISABLED, command=self.add_preset)
+        self.btn_add = ctk.CTkButton(btn_frame, text="NEW/SAVE", font=Theme.FONT_BODY, fg_color=Theme.BUTTON_HOVER, hover_color=Theme.TEXT_DISABLED, command=self.add_preset)
         self.btn_add.grid(row=0, column=0, padx=5, sticky="ew")
         
         self.btn_del = ctk.CTkButton(btn_frame, text="DELETE", font=Theme.FONT_BODY, fg_color="#441111", hover_color="#802122", command=self.del_preset)
@@ -751,7 +791,8 @@ class VMacroApp(ctk.CTk):
         
         self.editor_frame.grid(row=2, column=0, sticky="ew", pady=20)
         
-        self.tab_input = self.editor_frame.add("Input / Macro") 
+        self.tab_input = self.editor_frame.add("Keys & Mouse")
+        self.tab_macro = self.editor_frame.add("Macro Composer")
         self.tab_media = self.editor_frame.add("Media")
         self.tab_app_audio = self.editor_frame.add("App Audio")
         self.tab_led = self.editor_frame.add("LED")
@@ -802,6 +843,9 @@ class VMacroApp(ctk.CTk):
         self.cb_mouse_scroll = ctk.CTkComboBox(mouse_frame, values=list(MOUSE_WHEEL.keys()), command=self.store_ui_state, width=140)
         self.cb_mouse_scroll.grid(row=1, column=1, padx=10)
 
+        # --- MACRO COMPOSER TAB ---
+        self.setup_macro_tab_content()
+
         # --- MEDIA TAB ---
         self.cb_media = ctk.CTkComboBox(self.tab_media, values=list(MEDIA_MAP.keys()), command=self.store_ui_state, width=300)
         self.cb_media.pack(pady=30)
@@ -839,6 +883,393 @@ class VMacroApp(ctk.CTk):
         self.mapping_scroll = ctk.CTkScrollableFrame(self.tab_mappings, fg_color="transparent")
         self.mapping_scroll.pack(fill="both", expand=True, padx=10, pady=10)
         self.refresh_mappings_ui()
+
+    def setup_macro_tab_content(self):
+        macro_container = ctk.CTkFrame(self.tab_macro, fg_color="transparent")
+        macro_container.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Toolbar row 1: Controls
+        tb1 = ctk.CTkFrame(macro_container, fg_color="transparent")
+        tb1.pack(fill="x", pady=(2, 6))
+
+        self.btn_record_macro = ctk.CTkButton(
+            tb1, text="● RECORD", width=95, height=28,
+            font=("Segoe UI", 11, "bold"), fg_color="#b71c1c", hover_color="#d32f2f",
+            command=self.toggle_macro_recording
+        )
+        self.btn_record_macro.pack(side="left", padx=(0, 6))
+
+        self.var_macro_compact = ctk.BooleanVar(value=True)
+        self.chk_macro_compact = ctk.CTkCheckBox(
+            tb1, text="Smart Compact", variable=self.var_macro_compact,
+            font=("Segoe UI", 11), fg_color=Theme.ACTIVE_BUTTON
+        )
+        self.chk_macro_compact.pack(side="left", padx=4)
+
+        self.lbl_macro_status = ctk.CTkLabel(
+            tb1, text="", font=("Segoe UI", 11, "italic"), text_color="#ff5252"
+        )
+        self.lbl_macro_status.pack(side="left", padx=8)
+
+        self.btn_clear_macro = ctk.CTkButton(
+            tb1, text="Clear", width=55, height=28,
+            font=("Segoe UI", 11), fg_color="#331111", hover_color="#551111",
+            command=self.clear_current_macro
+        )
+        self.btn_clear_macro.pack(side="right", padx=(4, 0))
+
+        self.btn_test_macro = ctk.CTkButton(
+            tb1, text="▶ Test", width=70, height=28,
+            font=("Segoe UI", 11, "bold"), fg_color="#1b5e20", hover_color="#2e7d32",
+            command=self.test_current_macro
+        )
+        self.btn_test_macro.pack(side="right", padx=4)
+
+        # Toolbar row 2: Add Steps
+        tb2 = ctk.CTkFrame(macro_container, fg_color="transparent")
+        tb2.pack(fill="x", pady=(0, 6))
+
+        ctk.CTkLabel(tb2, text="Add Step:", font=("Segoe UI", 11, "bold"), text_color=Theme.TEXT_SECONDARY).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tb2, text="+ Key Tap", width=75, height=24, font=("Segoe UI", 10), fg_color=Theme.WIDGET_BG, hover_color=Theme.BUTTON_HOVER, command=lambda: self.add_macro_step("press")).pack(side="left", padx=2)
+        ctk.CTkButton(tb2, text="+ Text", width=65, height=24, font=("Segoe UI", 10), fg_color=Theme.WIDGET_BG, hover_color=Theme.BUTTON_HOVER, command=lambda: self.add_macro_step("text")).pack(side="left", padx=2)
+        ctk.CTkButton(tb2, text="+ Delay", width=65, height=24, font=("Segoe UI", 10), fg_color=Theme.WIDGET_BG, hover_color=Theme.BUTTON_HOVER, command=lambda: self.add_macro_step("delay")).pack(side="left", padx=2)
+        ctk.CTkButton(tb2, text="+ Hold", width=65, height=24, font=("Segoe UI", 10), fg_color=Theme.WIDGET_BG, hover_color=Theme.BUTTON_HOVER, command=lambda: self.add_macro_step("down")).pack(side="left", padx=2)
+        ctk.CTkButton(tb2, text="+ Release", width=70, height=24, font=("Segoe UI", 10), fg_color=Theme.WIDGET_BG, hover_color=Theme.BUTTON_HOVER, command=lambda: self.add_macro_step("up")).pack(side="left", padx=2)
+
+        # Visual Step Timeline Frame
+        self.macro_scroll = ctk.CTkScrollableFrame(macro_container, fg_color="#121212", corner_radius=8, height=135)
+        self.macro_scroll.pack(fill="both", expand=True, pady=2)
+
+    def refresh_macro_composer_ui(self):
+        if not self.running or not self.winfo_exists(): return
+        for w in self.macro_scroll.winfo_children():
+            w.destroy()
+
+        d = self.current_data[self.selected_key_index]
+        steps = d.get("steps", [])
+
+        if d.get("type") != "macro":
+            empty_lbl = ctk.CTkLabel(
+                self.macro_scroll,
+                text="Key is in Single Key/Media mode.\nClick '● RECORD' or '+ Add Step' to build a macro.",
+                font=("Segoe UI", 11, "italic"), text_color=Theme.TEXT_SECONDARY
+            )
+            empty_lbl.pack(pady=25)
+            return
+
+        if not steps:
+            empty_lbl = ctk.CTkLabel(
+                self.macro_scroll,
+                text="No steps configured.\nClick '● RECORD' to capture actions or add steps manually above.",
+                font=("Segoe UI", 11, "italic"), text_color=Theme.TEXT_SECONDARY
+            )
+            empty_lbl.pack(pady=25)
+            return
+
+        badge_colors = {
+            "press": ("TAP KEY", "#1976d2"),
+            "text": ("TYPE TEXT", "#388e3c"),
+            "delay": ("DELAY", "#f57c00"),
+            "down": ("HOLD", "#7b1fa2"),
+            "up": ("RELEASE", "#512da8")
+        }
+
+        for idx, step in enumerate(steps):
+            card = ctk.CTkFrame(self.macro_scroll, fg_color=Theme.WIDGET_BG, corner_radius=6)
+            card.pack(fill="x", pady=2, padx=4)
+
+            # Step number
+            ctk.CTkLabel(card, text=f"#{idx+1}", font=("Segoe UI", 10, "bold"), text_color=Theme.TEXT_SECONDARY, width=28).pack(side="left", padx=4)
+
+            # Type badge
+            badge_text, badge_bg = badge_colors.get(step.get("type"), ("STEP", "#444"))
+            badge = ctk.CTkLabel(card, text=badge_text, font=("Segoe UI", 9, "bold"), fg_color=badge_bg, text_color="white", corner_radius=4, width=68, height=20)
+            badge.pack(side="left", padx=4)
+
+            # Step Content Editor
+            stype = step.get("type")
+            if stype in ("press", "down", "up"):
+                entry_key = ctk.CTkEntry(card, height=24, width=130, font=("Segoe UI", 11))
+                entry_key.insert(0, step.get("key", ""))
+                entry_key.pack(side="left", padx=5)
+                entry_key.bind("<KeyRelease>", lambda e, s=step, ent=entry_key: self._on_step_text_change(s, "key", ent.get()))
+
+                btn_cap = ctk.CTkButton(
+                    card, text="⌨", width=26, height=24, fg_color=Theme.BUTTON_HOVER, hover_color="#555",
+                    command=lambda s=step: self.capture_key_dialog(lambda k, target_step=s: self._update_step_key(target_step, k))
+                )
+                btn_cap.pack(side="left", padx=2)
+
+            elif stype == "delay":
+                entry_ms = ctk.CTkEntry(card, height=24, width=65, font=("Segoe UI", 11))
+                entry_ms.insert(0, str(step.get("ms", 50)))
+                entry_ms.pack(side="left", padx=5)
+                entry_ms.bind("<KeyRelease>", lambda e, s=step, ent=entry_ms: self._on_step_num_change(s, "ms", ent.get()))
+                ctk.CTkLabel(card, text="ms", font=("Segoe UI", 11), text_color=Theme.TEXT_SECONDARY).pack(side="left")
+
+            elif stype == "text":
+                entry_txt = ctk.CTkEntry(card, height=24, font=("Segoe UI", 11))
+                entry_txt.insert(0, step.get("text", ""))
+                entry_txt.pack(side="left", fill="x", expand=True, padx=5)
+                entry_txt.bind("<KeyRelease>", lambda e, s=step, ent=entry_txt: self._on_step_text_change(s, "text", ent.get()))
+
+            # Reorder & Delete controls
+            btn_del = ctk.CTkButton(card, text="✕", width=24, height=24, fg_color="#441111", hover_color="#802122", command=lambda i=idx: self.delete_macro_step(i))
+            btn_del.pack(side="right", padx=(2, 4))
+
+            btn_dn = ctk.CTkButton(card, text="▼", width=24, height=24, fg_color=Theme.BUTTON_HOVER, state="normal" if idx < len(steps)-1 else "disabled", command=lambda i=idx: self.move_macro_step(i, 1))
+            btn_dn.pack(side="right", padx=2)
+
+            btn_up = ctk.CTkButton(card, text="▲", width=24, height=24, fg_color=Theme.BUTTON_HOVER, state="normal" if idx > 0 else "disabled", command=lambda i=idx: self.move_macro_step(i, -1))
+            btn_up.pack(side="right", padx=2)
+
+    def _on_step_text_change(self, step, field, value):
+        step[field] = value
+        self.save_presets_file()
+
+    def _on_step_num_change(self, step, field, value):
+        try:
+            step[field] = int(value)
+            self.save_presets_file()
+        except: pass
+
+    def _update_step_key(self, step, key_str):
+        step["key"] = key_str
+        self.save_presets_file()
+        self.refresh_macro_composer_ui()
+
+    def add_macro_step(self, step_type):
+        d = self.current_data[self.selected_key_index]
+        if d.get("type") != "macro":
+            d["type"] = "macro"
+            d["steps"] = []
+        steps = d.setdefault("steps", [])
+
+        if step_type == "press":
+            steps.append({"type": "press", "key": "enter"})
+        elif step_type == "text":
+            steps.append({"type": "text", "text": "Hello World"})
+        elif step_type == "delay":
+            steps.append({"type": "delay", "ms": 100})
+        elif step_type == "down":
+            steps.append({"type": "down", "key": "shift"})
+        elif step_type == "up":
+            steps.append({"type": "up", "key": "shift"})
+
+        self.refresh_macro_composer_ui()
+        self.draw_visualizer()
+        self.save_presets_file()
+
+    def move_macro_step(self, index, delta):
+        steps = self.current_data[self.selected_key_index].get("steps", [])
+        new_idx = index + delta
+        if 0 <= new_idx < len(steps):
+            steps[index], steps[new_idx] = steps[new_idx], steps[index]
+            self.refresh_macro_composer_ui()
+            self.save_presets_file()
+
+    def delete_macro_step(self, index):
+        steps = self.current_data[self.selected_key_index].get("steps", [])
+        if 0 <= index < len(steps):
+            steps.pop(index)
+            self.refresh_macro_composer_ui()
+            self.draw_visualizer()
+            self.save_presets_file()
+
+    def clear_current_macro(self):
+        d = self.current_data[self.selected_key_index]
+        if d.get("type") == "macro":
+            d["steps"] = []
+            self.refresh_macro_composer_ui()
+            self.draw_visualizer()
+            self.save_presets_file()
+
+    def toggle_macro_recording(self):
+        if not keyboard:
+            messagebox.showerror("Error", "Keyboard library is missing.")
+            return
+        if getattr(self, "is_recording_macro", False):
+            self.stop_macro_recording()
+        else:
+            self.start_macro_recording()
+
+    def start_macro_recording(self):
+        self.is_recording_macro = True
+        self.btn_record_macro.configure(text="■ STOP", fg_color="#ff1744", hover_color="#d50000")
+        self.lbl_macro_status.configure(text="● Recording keystrokes... Click Stop when finished.")
+
+        d = self.current_data[self.selected_key_index]
+        if d.get("type") != "macro":
+            d["type"] = "macro"
+            d["steps"] = []
+
+        self.macro_recorded_events = []
+        self.macro_last_event_time = time.time()
+
+        def on_record(event):
+            if not getattr(self, "is_recording_macro", False): return
+            now = time.time()
+            delta = now - self.macro_last_event_time
+            self.macro_last_event_time = now
+            self.macro_recorded_events.append((event.name.lower(), event.event_type, delta))
+
+        self.macro_hook = keyboard.hook(on_record)
+
+    def stop_macro_recording(self):
+        self.is_recording_macro = False
+        if hasattr(self, "macro_hook") and self.macro_hook:
+            try: keyboard.unhook(self.macro_hook)
+            except: pass
+            self.macro_hook = None
+
+        self.btn_record_macro.configure(text="● RECORD", fg_color="#b71c1c", hover_color="#d32f2f")
+        self.lbl_macro_status.configure(text="")
+
+        compact = self.var_macro_compact.get()
+        new_steps = self.process_recorded_events(self.macro_recorded_events, compact)
+
+        if new_steps:
+            d = self.current_data[self.selected_key_index]
+            existing = d.setdefault("steps", [])
+            existing.extend(new_steps)
+            self.refresh_macro_composer_ui()
+            self.draw_visualizer()
+            self.save_presets_file()
+
+    def process_recorded_events(self, events, smart_compact=True):
+        steps = []
+        if not events: return steps
+
+        if not smart_compact:
+            for idx, (name, etype, delta) in enumerate(events):
+                if idx > 0 and delta >= 0.02:
+                    steps.append({"type": "delay", "ms": min(5000, max(10, int(delta * 1000)))})
+                steps.append({"type": "down" if etype == "down" else "up", "key": name})
+            return steps
+
+        i = 0
+        n = len(events)
+        while i < n:
+            name, etype, delta = events[i]
+            if steps and delta >= 0.035:
+                steps.append({"type": "delay", "ms": min(5000, max(20, int(delta * 1000)))})
+
+            if etype == "down":
+                # Single key tap check
+                if i + 1 < n and events[i+1][0] == name and events[i+1][1] == "up":
+                    steps.append({"type": "press", "key": name})
+                    i += 2
+                    continue
+
+                # Modifier combo check
+                mods = []
+                j = i
+                while j < n and events[j][1] == "down" and events[j][0] in ("ctrl", "control", "shift", "alt", "windows", "win"):
+                    clean = "ctrl" if "ctrl" in events[j][0] else "win" if "win" in events[j][0] else events[j][0]
+                    mods.append(clean)
+                    j += 1
+
+                if j < n and events[j][1] == "down" and mods:
+                    key = events[j][0]
+                    if j + 1 < n and events[j+1][0] == key and events[j+1][1] == "up":
+                        combo_str = "+".join(mods + [key])
+                        steps.append({"type": "press", "key": combo_str})
+                        k = j + 2
+                        rem = set(mods)
+                        while k < n and events[k][1] == "up" and (events[k][0] in rem or ("ctrl" in events[k][0] and "ctrl" in rem)):
+                            k += 1
+                        i = k
+                        continue
+
+                steps.append({"type": "down", "key": name})
+                i += 1
+            else:
+                steps.append({"type": "up", "key": name})
+                i += 1
+        return steps
+
+    def test_current_macro(self):
+        d = self.current_data[self.selected_key_index]
+        steps = d.get("steps", [])
+        if not steps:
+            messagebox.showinfo("Macro Empty", "Add some steps to the macro first!")
+            return
+
+        def _run():
+            self.btn_test_macro.configure(text="In 1s...", state="disabled")
+            time.sleep(1.0)
+            self.btn_test_macro.configure(text="Testing...")
+            MacroExecutor.play_macro(steps)
+            time.sleep(0.5)
+            self.btn_test_macro.configure(text="▶ Test", state="normal")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def capture_key_dialog(self, callback):
+        if not keyboard:
+            messagebox.showerror("Error", "Keyboard library is missing.")
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Capture Key / Shortcut")
+        win.geometry("360x200")
+        win.resizable(False, False)
+        win.attributes("-topmost", True)
+        win.configure(fg_color=Theme.CONTAINER_BG)
+
+        try:
+            x = self.winfo_x() + (self.winfo_width()//2) - 180
+            y = self.winfo_y() + (self.winfo_height()//2) - 100
+            win.geometry(f"+{x}+{y}")
+        except: pass
+
+        ctk.CTkLabel(win, text="KEY CAPTURE", font=Theme.FONT_SUBHEADER).pack(pady=(15, 5))
+        ctk.CTkLabel(win, text="Press the key or combination:", font=Theme.FONT_BODY, text_color=Theme.TEXT_SECONDARY).pack()
+
+        lbl_detected = ctk.CTkLabel(win, text="[ Waiting for input... ]", font=("Segoe UI", 14, "bold"), text_color=Theme.CONNECTED_COLOR)
+        lbl_detected.pack(pady=12)
+
+        pressed_mods = set()
+        current_combo = [""]
+
+        def on_event(event):
+            name = event.name.lower()
+            if event.event_type == "down":
+                if name in ("ctrl", "control", "shift", "alt", "windows", "win"):
+                    clean = "ctrl" if "ctrl" in name else "win" if "win" in name else name
+                    pressed_mods.add(clean)
+                else:
+                    combo = list(pressed_mods) + [name]
+                    combo_str = "+".join(combo)
+                    current_combo[0] = combo_str
+                    try:
+                        win.after(0, lambda c=combo_str: lbl_detected.configure(text=c.upper()))
+                    except: pass
+            elif event.event_type == "up":
+                clean = "ctrl" if "ctrl" in name else "win" if "win" in name else name
+                if clean in pressed_mods:
+                    pressed_mods.discard(clean)
+
+        hook = keyboard.hook(on_event)
+
+        def accept():
+            try: keyboard.unhook(hook)
+            except: pass
+            val = current_combo[0]
+            win.destroy()
+            if val: callback(val)
+
+        def cancel():
+            try: keyboard.unhook(hook)
+            except: pass
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", cancel)
+
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        ctk.CTkButton(btn_frame, text="ACCEPT", width=90, fg_color=Theme.ACTIVE_BUTTON, text_color="black", command=accept).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="CANCEL", width=90, fg_color=Theme.BUTTON_HOVER, command=cancel).pack(side="left", padx=5)
 
     def grab_app_for_volume(self):
         def delayed():
@@ -1093,6 +1524,7 @@ class VMacroApp(ctk.CTk):
             if "type" not in new_d: new_d["type"] = "key"
             if "code" not in new_d: new_d["code"] = 0
             if "mouse_btn" not in new_d: new_d["mouse_btn"] = 0
+            if "steps" not in new_d: new_d["steps"] = []
             if "mouse_scroll" not in new_d: new_d["mouse_scroll"] = 0
             
             if new_d["type"] == "mouse":
@@ -1169,7 +1601,28 @@ class VMacroApp(ctk.CTk):
             tag = f"key_{i}"
             self.create_rounded_rect(x, key_y, x+key_size, key_y+key_size, radius=15, fill=fill, outline=outline, width=width, tags=tag)
             text_color = Theme.TEXT_INVERSE if (is_sel and not self.is_dark(accent)) else Theme.TEXT_PRIMARY
-            self.canvas.create_text(x + key_size/2, key_y + key_size/2, text=str(i+1), fill=text_color, font=("Segoe UI", 24, "bold"), tags=tag)
+            
+            d = self.current_data[i] if i < len(self.current_data) else {}
+            dtype = d.get("type", "key")
+            sub_text = ""
+            if dtype == "macro":
+                sub_text = f"MACRO ({len(d.get('steps', []))})"
+            elif dtype == "media":
+                sub_text = "MEDIA"
+            elif dtype == "app_vol":
+                sub_text = "VOL"
+            elif dtype == "mouse":
+                sub_text = "MOUSE"
+            else:
+                code = d.get("code", 0)
+                sub_text = next((k for k, v in KEY_MAP.items() if v == code), "") if code else ""
+                if len(sub_text) > 8: sub_text = sub_text[:7] + ".."
+
+            if sub_text:
+                self.canvas.create_text(x + key_size/2, key_y + key_size/2 - 8, text=str(i+1), fill=text_color, font=("Segoe UI", 20, "bold"), tags=tag)
+                self.canvas.create_text(x + key_size/2, key_y + key_size/2 + 18, text=sub_text, fill=text_color if is_sel else Theme.TEXT_SECONDARY, font=("Segoe UI", 8, "bold"), tags=tag)
+            else:
+                self.canvas.create_text(x + key_size/2, key_y + key_size/2, text=str(i+1), fill=text_color, font=("Segoe UI", 24, "bold"), tags=tag)
 
         knob_x = start_x + (3 * (key_size + gap)) + 60
         knob_y = cy
@@ -1235,30 +1688,34 @@ class VMacroApp(ctk.CTk):
         try:
             if dtype == "media":
                 self.editor_frame.set("Media")
-                self.cb_media.set(next((k for k,v in MEDIA_MAP.items() if v == (d.get("b1", 0), d.get("b2", 0))), "None"))
+                self.cb_media.set(next((k for k, v in MEDIA_MAP.items() if v == (d.get("b1", 0), d.get("b2", 0))), "None"))
             elif dtype == "app_vol":
                 self.editor_frame.set("App Audio")
                 self.entry_app_name.delete(0, 'end')
                 self.entry_app_name.insert(0, d.get("app", ""))
                 act_map = {"up": "Volume Up", "down": "Volume Down", "mute": "Mute"}
                 self.cb_app_action.set(act_map.get(d.get("action", "up"), "Volume Up"))
+            elif dtype == "macro":
+                self.editor_frame.set("Macro Composer")
+                self.refresh_macro_composer_ui()
             else:
-                self.editor_frame.set("Input / Macro")
+                self.editor_frame.set("Keys & Mouse")
                 mod = d.get("mod", 0)
                 self.var_ctrl.set(bool(mod & 1))
                 self.var_shift.set(bool(mod & 2))
                 self.var_alt.set(bool(mod & 4))
                 self.var_win.set(bool(mod & 8))
-                
+
                 code = d.get("code", 0)
-                self.cb_key.set(next((k for k,v in KEY_MAP.items() if v == code), "None"))
-                
+                self.cb_key.set(next((k for k, v in KEY_MAP.items() if v == code), "None"))
+
                 m_btn = d.get("mouse_btn", 0)
                 m_scr = d.get("mouse_scroll", 0)
-                self.cb_mouse_btn.set(next((k for k,v in MOUSE_BUTTONS.items() if v == m_btn), "None"))
-                self.cb_mouse_scroll.set(next((k for k,v in MOUSE_WHEEL.items() if v == m_scr), "None"))
-            
-            self.cb_led.set(next((k for k,v in LED_MODES.items() if v == self.led_mode), "Static"))
+                self.cb_mouse_btn.set(next((k for k, v in MOUSE_BUTTONS.items() if v == m_btn), "None"))
+                self.cb_mouse_scroll.set(next((k for k, v in MOUSE_WHEEL.items() if v == m_scr), "None"))
+
+            self.refresh_macro_composer_ui()
+            self.cb_led.set(next((k for k, v in LED_MODES.items() if v == self.led_mode), "Static"))
         except: pass
 
     def store_ui_state(self, _=None):
@@ -1266,21 +1723,24 @@ class VMacroApp(ctk.CTk):
         tab = self.editor_frame.get()
         idx = self.selected_key_index
         
-        if tab == "Input / Macro":
+        if tab == "Keys & Mouse":
             mod = (1 if self.var_ctrl.get() else 0) | (2 if self.var_shift.get() else 0) | (4 if self.var_alt.get() else 0) | (8 if self.var_win.get() else 0)
             key_code = KEY_MAP.get(self.cb_key.get(), 0)
             mouse_btn = MOUSE_BUTTONS.get(self.cb_mouse_btn.get(), 0)
             mouse_scroll = MOUSE_WHEEL.get(self.cb_mouse_scroll.get(), 0)
             
+            old_steps = self.current_data[idx].get("steps", [])
             if mouse_btn != 0 or mouse_scroll != 0:
                 self.current_data[idx] = {
                     "type": "mouse", "mod": mod, "code": 0,
-                    "mouse_btn": mouse_btn, "mouse_scroll": mouse_scroll
+                    "mouse_btn": mouse_btn, "mouse_scroll": mouse_scroll,
+                    "steps": old_steps
                 }
             else:
                 self.current_data[idx] = {
                     "type": "key", "mod": mod, "code": key_code,
-                    "mouse_btn": 0, "mouse_scroll": 0
+                    "mouse_btn": 0, "mouse_scroll": 0,
+                    "steps": old_steps
                 }
                 
         elif tab == "Media":
@@ -1346,9 +1806,22 @@ class VMacroApp(ctk.CTk):
                             f_key = f"f{13 + (trigger_code - 104)}"
                             hk_str = f"ctrl+alt+shift+{f_key}"
                             new_hotkeys.append({
+                                "type": "app_vol",
                                 "hotkey": hk_str,
                                 "app": d.get("app"),
                                 "action": d.get("action")
+                            })
+                    elif t == "macro":
+                        trigger_code = INTERNAL_TRIGGER_KEYS[i]
+                        self.pad.set_key(i, TRIGGER_MODIFIER, trigger_code)
+                        
+                        if keyboard:
+                            f_key = f"f{13 + (trigger_code - 104)}"
+                            hk_str = f"ctrl+alt+shift+{f_key}"
+                            new_hotkeys.append({
+                                "type": "macro",
+                                "hotkey": hk_str,
+                                "steps": list(d.get("steps", []))
                             })
                     time.sleep(0.02)
                 self.pad.set_led(self.led_mode)
@@ -1372,9 +1845,15 @@ class VMacroApp(ctk.CTk):
         
         for item in new_hotkeys:
             try:
-                cb = lambda a=item["app"], ac=item["action"]: AppAudioController.adjust_app_volume(a, ac)
-                hk = keyboard.add_hotkey(item["hotkey"], cb, suppress=True) 
-                self.active_hotkeys.append(hk)
+                if item.get("type") == "macro":
+                    m_steps = list(item.get("steps", []))
+                    cb = lambda s=m_steps: MacroExecutor.play_macro(s)
+                    hk = keyboard.add_hotkey(item["hotkey"], cb, suppress=True)
+                    self.active_hotkeys.append(hk)
+                else:
+                    cb = lambda a=item["app"], ac=item["action"]: AppAudioController.adjust_app_volume(a, ac)
+                    hk = keyboard.add_hotkey(item["hotkey"], cb, suppress=True) 
+                    self.active_hotkeys.append(hk)
             except Exception as e:
                 print(f"Hotkey Error: {e}")
 
@@ -1506,6 +1985,9 @@ class VMacroApp(ctk.CTk):
     def _perform_shutdown(self):
         if self.tray_icon:
             self.tray_icon.stop()
+        if hasattr(self, "macro_hook") and self.macro_hook:
+            try: keyboard.unhook(self.macro_hook)
+            except: pass
         if keyboard:
             try: keyboard.unhook_all()
             except: pass
